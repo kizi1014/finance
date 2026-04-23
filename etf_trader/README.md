@@ -36,10 +36,18 @@ etf_trader/
 ├── data_feed.py        # 数据获取（akshare）
 ├── strategy.py         # 策略计算（均线、信号）
 ├── backtest.py         # 回测引擎
+├── grid_backtest.py    # 网格策略回测
+├── hybrid_backtest.py  # 混合策略回测
 ├── trader.py           # 交易执行（模拟/QMT/手动）
+├── notifier.py         # 通知模块（微信/钉钉/Server酱）
+├── daily_task.py       # 每日定时任务（服务器部署用）
 ├── main.py             # 主程序入口
 ├── requirements.txt    # Python依赖
 └── README.md           # 本文件
+
+deploy/
+├── deploy.sh           # Linux 服务器一键部署脚本
+└── README.md           # 服务器部署详细指南
 ```
 
 ## 快速开始
@@ -86,23 +94,67 @@ python main.py --mode manual
 | `POSITION_RATIO` | 每次买入仓位比例 | `1.0`（全仓） |
 | `COMMISSION_RATE` | 券商佣金率 | `0.0003`（万3） |
 | `RUN_MODE` | 默认运行模式 | `"backtest"` |
+| `STRATEGY` | 策略选择 | `"grid"`（可选 ma/grid/hybrid） |
 
 其他沪深300 ETF 可选：
 - `510330` 华夏沪深300ETF
 - `159919` 嘉实沪深300ETF
 
+## 服务器部署（信号推送）
+
+将策略部署到 Linux 服务器，每天收盘后自动计算信号，通过微信/钉钉推送通知。
+
+### 一键部署
+
+```bash
+# 在 Linux 服务器上执行
+sudo curl -fsSL https://raw.githubusercontent.com/kizi1014/finance/main/deploy/deploy.sh | bash
+```
+
+### 配置通知
+
+编辑 `/opt/etf_trader/etf_trader/.env`，配置至少一种通知渠道：
+
+```bash
+# Server酱（最简单）
+SERVERCHAN_KEY=你的SendKey
+
+# 或钉钉机器人
+DINGTALK_WEBHOOK=https://oapi.dingtalk.com/robot/send?access_token=xxx
+DINGTALK_SECRET=加签密钥
+
+# 或微信企业号
+WECHAT_CORP_ID=企业ID
+WECHAT_AGENT_ID=应用AgentID
+WECHAT_SECRET=应用Secret
+```
+
+### 管理命令
+
+```bash
+etf-run            # 手动执行策略任务
+etf-logs           # 查看实时日志
+etf-status         # 查看服务状态
+```
+
+详细部署指南见 [`deploy/README.md`](deploy/README.md)。
+
 ## 实盘交易接入
 
-### 方式一：QMT（推荐）
+### 方式一：QMT（全自动）
 
 1. 开通支持 QMT 的券商（如国金、华泰、银河等）
 2. 申请开通 **miniQMT** 权限
-3. 安装券商提供的 QMT 客户端
+3. 安装券商提供的 QMT 客户端（仅 Windows）
 4. 在 `config.py` 中填写 QMT 路径和账号
 5. 在 `trader.py` 的 `QMTTrader` 中取消注释并完善下单代码
 6. 运行：`python main.py --mode qmt`
 
-### 方式二：手动执行
+### 方式二：服务器信号推送 + 手动下单（推荐过渡方案）
+
+按上方"服务器部署"章节操作，收到微信/钉钉通知后，在券商APP手动下单。
+
+### 方式三：手动执行
 
 使用 `--mode manual`，程序会在出现信号时打印提醒，你手动在券商APP中下单。
 
@@ -119,14 +171,15 @@ python main.py --mode manual
 
 ## 扩展建议
 
-- 加入 **止损机制**（如亏损 5% 强制止损）
+- 加入 **止损机制**（如亏损 5% 强制止损）✅ 已实现
 - 加入 **仓位管理**（如均线多头排列时满仓，空头时空仓或半仓）
-- 加入 **过滤条件**（如只在大盘趋势向上时开仓）
+- 加入 **过滤条件**（如只在大盘趋势向上时开仓）✅ 已实现
 - 优化为 **分钟级策略**（需接入实时行情源）
-- 接入 **邮件/微信通知**，信号出现时自动提醒
+- 接入 **邮件/微信通知**（信号出现时自动提醒）✅ 已实现
 
 ## 依赖
 
 - [akshare](https://www.akshare.xyz/) - 免费金融数据接口
 - pandas / numpy - 数据处理
 - matplotlib - 绘图（如需可视化）
+- requests - 通知推送
