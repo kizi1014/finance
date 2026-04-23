@@ -44,11 +44,24 @@ fi
 log_info "开始部署 ETF 量化策略盘中监控服务..."
 
 # =============================================================================
-# 2. 安装系统依赖
+# 2. 安装系统依赖（自动检测系统类型）
 # =============================================================================
-log_info "安装系统依赖..."
-apt-get update -qq
-apt-get install -y -qq git python3 python3-venv python3-pip curl >/dev/null 2>&1
+log_info "检测系统类型并安装依赖..."
+
+if command -v apt-get &> /dev/null; then
+    # Debian/Ubuntu 系
+    apt-get update -qq
+    apt-get install -y -qq git python3 python3-venv python3-pip curl >/dev/null 2>&1
+elif command -v yum &> /dev/null; then
+    # CentOS/RHEL 系
+    yum install -y -q git python3 python3-venv python3-pip curl >/dev/null 2>&1
+    # CentOS 可能需要额外安装 python3-devel
+    yum install -y -q python3-devel gcc >/dev/null 2>&1 || true
+else
+    log_error "不支持的系统，无法自动安装依赖"
+    exit 1
+fi
+
 log_info "系统依赖安装完成"
 
 # =============================================================================
