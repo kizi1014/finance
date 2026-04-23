@@ -1,13 +1,15 @@
-# ETF 量化策略 — Linux 服务器部署指南
+# ETF 量化策略 — Linux 服务器部署指南（盘中实时监控版）
 
 ## 方案概述
 
-**Linux 服务器定时计算信号 → 微信/钉钉推送通知 → 手动在券商 APP 下单**
+**Linux 服务器盘中实时监控 → 信号出现时即时推送微信/钉钉 → 手动在券商 APP 下单**
 
-- ✅ 成本低（Linux 服务器约 500-1000 元/年）
-- ✅ 风险可控（不自动下单，人工确认）
-- ✅ 7×24 小时稳定运行
-- ✅ 多渠道推送（微信/钉钉/Server酱）
+- ✅ **盘中实时监控**：交易时间内每 60 秒检查一次行情
+- ✅ **信号即时推送**：买入/卖出信号出现时立即通知，不等到收盘
+- ✅ **防重复打扰**：同一信号只推送一次
+- ✅ **心跳保活**：每 30 分钟发送一次状态报告，确认程序正常运行
+- ✅ **自动守护**：systemd 常驻服务，崩溃自动重启
+- ✅ **非交易时间自动休眠**：节省资源
 
 ---
 
@@ -16,17 +18,17 @@
 | 配置项 | 最低要求 | 推荐 |
 |--------|---------|------|
 | 系统 | Ubuntu 20.04+ / CentOS 7+ | Ubuntu 22.04 LTS |
-| CPU | 1核 | 2核 |
-| 内存 | 1GB | 2GB |
-| 磁盘 | 20GB | 40GB SSD |
-| 带宽 | 1Mbps | 2Mbps |
+| CPU | 1核 | 1核 |
+| 内存 | 512MB | 1GB |
+| 磁盘 | 10GB | 20GB SSD |
+| 带宽 | 1Mbps | 1Mbps |
+
+> 💡 **配置要求很低**：程序只是定时拉取数据和计算均线，不需要高配置。1核1G 足够。
 
 **推荐云服务商**:
-- 阿里云 ECS：2核2G，约 600元/年（新用户首年 99元）
-- 腾讯云 CVM：2核2G，约 600元/年
+- 阿里云 ECS：1核1G，约 300元/年（新用户首年 99元）
+- 腾讯云 CVM：1核1G，约 300元/年
 - 华为云：类似价格
-
-**地域选择**: 国内任意节点即可（数据通过 akshare 获取，无需低延迟）
 
 ---
 
@@ -35,7 +37,6 @@
 ### 1. 购买服务器并连接
 
 ```bash
-# 通过 SSH 连接到服务器
 ssh root@你的服务器IP
 ```
 
@@ -47,20 +48,6 @@ curl -fsSL https://raw.githubusercontent.com/kizi1014/finance/main/deploy/deploy
 
 # 执行部署
 chmod +x deploy.sh && sudo ./deploy.sh
-```
-
-或者手动执行：
-
-```bash
-cd /opt
-sudo git clone https://github.com/kizi1014/finance.git etf_trader
-cd etf_trader/etf_trader
-
-# 创建虚拟环境
-python3 -m venv venv
-source venv/bin/activate
-pip install -r requirements.txt
-pip install requests
 ```
 
 ### 3. 配置通知渠道
@@ -118,80 +105,73 @@ venv/bin/python notifier.py
 
 如果配置正确，你会收到一条测试消息。
 
-### 5. 手动运行策略
+### 5. 启动监控服务
 
 ```bash
-# 均线策略
-etf-run
+# 启动监控（systemd 常驻守护）
+etf-start
 
-# 网格策略
-etf-run --strategy grid
-
-# 混合策略
-etf-run --strategy hybrid
-```
-
-### 6. 查看日志
-
-```bash
-# 实时查看日志
-etf-logs
-
-# 查看服务状态
+# 查看状态
 etf-status
+
+# 查看实时日志
+etf-logs
 ```
 
 ---
 
-## 定时任务说明
-
-部署完成后，系统会自动配置定时任务：
-
-- **执行时间**: 周一到周五 15:05（A股收盘后 5 分钟）
-- **执行内容**: 运行 `daily_task.py`，计算信号并推送通知
-- **日志位置**: `/var/log/etf_trader/daily.log`
-
-### 管理定时任务
+## 服务管理
 
 ```bash
-# 查看定时器状态
-systemctl status etf_trader.timer
+# 启动 / 停止 / 重启
+etf-start
+etf-stop
+etf-restart
 
-# 立即执行一次
-systemctl start etf_trader.service
+# 查看实时日志
+etf-logs
 
-# 停止定时任务
-systemctl stop etf_trader.timer
+# 查看服务状态
+etf-status
 
-# 重新启用
-systemctl start etf_trader.timer
-systemctl enable etf_trader.timer
+# systemctl 原生命令
+systemctl status etf_trader
+systemctl start etf_trader
+systemctl stop etf_trader
+systemctl restart etf_trader
+
+# 查看系统日志
+journalctl -u etf_trader -f
 ```
 
-### 修改执行时间
+---
 
-```bash
-sudo nano /etc/systemd/system/etf_trader.timer
-```
+## 监控逻辑说明
 
-修改 `OnCalendar` 行，例如改为早上 9:35：
+### 交易时间内（9:30-11:30, 13:00-15:00）
 
-```ini
-OnCalendar=Mon..Fri 9:35:00
-```
+程序每 **60 秒** 执行一次：
 
-然后重载：
+1. 拉取 ETF 实时行情
+2. 获取历史数据计算均线
+3. 判断当前信号状态
+4. **如果信号发生变化** → 立即推送微信/钉钉通知
+5. **每 30 分钟** → 发送一次心跳报告
 
-```bash
-sudo systemctl daemon-reload
-sudo systemctl restart etf_trader.timer
-```
+### 非交易时间
+
+程序自动休眠，每分钟检查一次是否到交易时间。
+
+### 防重复机制
+
+- 同一交易日的同一信号只推送 **一次**
+- 即使价格反复穿越均线，也不会重复打扰
 
 ---
 
 ## 通知内容示例
 
-### 买入信号
+### 买入信号（即时推送）
 
 ```
 📈 ETF交易信号 — 买入
@@ -203,23 +183,38 @@ MA5: 4.010
 MA20: 3.998
 MA60: 3.950
 
-MA5上穿MA20，趋势确认，建议建仓
+盘中实时监控触发 | 当前时间 10:23:15
+MA5上穿MA20，趋势确认，建议立即关注
 
 ⏰ 请在券商APP中手动操作
+⏱️ 通知时间: 2026-04-22 10:23:15
 ```
 
-### 每日报告（无信号时）
+### 心跳报告（每30分钟）
 
 ```
-📊 ETF策略每日报告
+💓 ETF监控心跳
 
-运行时间: 2026-04-22 15:05:03
 标的: 华泰柏瑞沪深300ETF (510300)
-最新收盘价: 4.052
+当前价格: 4.052 元
 当前信号: 无
 MA5: 4.010
 MA20: 3.998
 MA60: 3.950
+
+⏰ 监控运行正常，信号出现时立即通知
+```
+
+### 服务启动通知
+
+```
+🚀 ETF监控服务已启动
+
+标的: 华泰柏瑞沪深300ETF (510300)
+策略: ma
+启动时间: 2026-04-22 09:00:00
+
+交易时间内将实时监控，信号出现时立即通知。
 ```
 
 ---
@@ -238,17 +233,23 @@ source .env
 venv/bin/python -c "from notifier import Notifier; n = Notifier(); n.send('测试', '这是一条测试消息')"
 
 # 3. 检查日志
-tail -n 50 /var/log/etf_trader/daily.log
+tail -n 50 /var/log/etf_trader/monitor.log
+
+# 4. 检查服务状态
+systemctl status etf_trader
 ```
 
-### 策略运行报错
+### 服务无法启动
 
 ```bash
-# 查看详细日志
+# 查看详细错误
 journalctl -u etf_trader --no-pager -n 100
 
 # 手动运行看错误
-etf-run
+cd /opt/etf_trader/etf_trader
+source venv/bin/activate
+source .env
+python daily_task.py
 ```
 
 ### 数据获取失败
@@ -271,7 +272,7 @@ curl -I https://quote.eastmoney.com
 ```bash
 cd /opt/etf_trader
 sudo git pull origin main
-sudo systemctl restart etf_trader.timer
+sudo etf-restart
 ```
 
 ---
@@ -285,32 +286,28 @@ sudo systemctl restart etf_trader.timer
 
 ---
 
-## 进阶：Docker 部署（可选）
+## 进阶：调整刷新频率
 
-如果你熟悉 Docker，也可以用容器化部署：
+编辑 `config.py`：
 
-```dockerfile
-FROM python:3.11-slim
-
-WORKDIR /app
-COPY etf_trader/ .
-RUN pip install --no-cache-dir -r requirements.txt requests
-
-ENV PYTHONUNBUFFERED=1
-CMD ["python", "daily_task.py"]
+```python
+# 数据刷新间隔（秒）
+# 60 秒 = 1分钟，适合日线策略
+# 30 秒 = 更灵敏，但注意 akshare 有频率限制
+REFRESH_INTERVAL = 60
 ```
 
+修改后重启服务：
+
 ```bash
-docker build -t etf-trader .
-docker run --env-file .env etf-trader
+etf-restart
 ```
 
 ---
 
 ## 后续升级路径
 
-当前是"信号推送 + 手动下单"方案，后续可升级为全自动：
+当前是"盘中信号推送 + 手动下单"方案，后续可升级为全自动：
 
 1. **QMT 全自动**：购买 Windows 云服务器，安装 QMT 客户端，完善 `trader.py` 中的 `QMTTrader`
 2. **券商 API 直连**：如券商支持 XTP/PTrade 等 Linux API，可新增交易器类对接
-3. **多因子策略**：在 `strategy.py` 中加入更多技术指标和过滤条件

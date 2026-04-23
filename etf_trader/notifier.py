@@ -242,6 +242,7 @@ class Notifier:
             content_lines.append(f"\n{extra_info}")
         
         content_lines.append("\n⏰ 请在券商APP中手动操作")
+        content_lines.append(f"\n⏱️ 通知时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
         
         content = "\n".join(content_lines)
         return self.send(title, content)

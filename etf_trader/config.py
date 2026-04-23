@@ -74,6 +74,8 @@ HYBRID_CONFIRM_DAYS = 3
 # 运行模式: "backtest"=回测, "simulate"=模拟盘, "qmt"=QMT实盘
 RUN_MODE = "backtest"
 # 数据刷新间隔（秒），模拟盘/实盘用
+# 盘中监控建议 60 秒（1分钟），避免过于频繁
+# 如需更灵敏可设为 30 秒，但注意 akshare 接口有频率限制
 REFRESH_INTERVAL = 60
 
 # ============== QMT 配置（如需实盘） ==============
