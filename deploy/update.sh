@@ -16,7 +16,7 @@ set -e
 
 # 配置项
 PROJECT_NAME="etf_trader"
-INSTALL_DIR="/opt/${PROJECT_NAME}"
+INSTALL_DIR="/opt/finance"
 LOG_DIR="/var/log/${PROJECT_NAME}"
 SERVICE_NAME="${PROJECT_NAME}"
 REPO_URL="https://github.com/kizi1014/finance.git"
@@ -47,9 +47,11 @@ log_info "开始更新 ETF 量化策略服务..."
 # 2. 检查安装目录
 # =============================================================================
 if [ ! -d "$INSTALL_DIR" ]; then
-    log_warn "安装目录 $INSTALL_DIR 不存在，执行全新部署..."
-    curl -fsSL "${REPO_URL/raw.githubusercontent.com/raw.githubusercontent.com}" | sed 's|deploy.sh|deploy.sh|' | bash
-    exit 0
+    log_error "安装目录 $INSTALL_DIR 不存在"
+    log_info "请先执行全新部署:"
+    log_info "  git clone $REPO_URL $INSTALL_DIR"
+    log_info "  cd $INSTALL_DIR && sudo bash deploy/deploy.sh"
+    exit 1
 fi
 
 cd "$INSTALL_DIR"
