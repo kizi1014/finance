@@ -91,53 +91,63 @@ def generate_mock_data(days: int = 500, seed: int = 42) -> pd.DataFrame:
     return df
 
 
-def _get_baostock_index(start: str, end: str) -> pd.DataFrame:
+def _get_baostock_etf(code: str, start: str, end: str) -> pd.DataFrame:
     """
-    通过 baostock 获取沪深300指数真实数据（akshare失效时的备选）
+    通过 baostock 获取指定 ETF 真实数据（akshare失效时的备选）
     """
     import baostock as bs
+    import time
     
-    print("📡 尝试通过 baostock 获取沪深300指数真实数据...")
-    bs.login()
+    # baostock 代码格式：sh.510300 或 sz.159915
+    # 上海交易所：5/6/9 开头；深圳交易所：0/1/2/3 开头
+    if code.startswith(("5", "6", "9")):
+        bs_code = f"sh.{code}"
+    else:
+        bs_code = f"sz.{code}"
     
-    # baostock 要求日期格式为 YYYY-MM-DD
-    start_fmt = pd.to_datetime(start).strftime("%Y-%m-%d") if start else "2022-01-01"
-    end_fmt = pd.to_datetime(end).strftime("%Y-%m-%d") if end else datetime.now().strftime("%Y-%m-%d")
+    print(f"📡 尝试通过 baostock 获取 {code} 真实数据...")
     
-    rs = bs.query_history_k_data_plus(
-        "sh.000300",
-        "date,open,high,low,close,volume",
-        start_date=start_fmt,
-        end_date=end_fmt,
-        frequency="d",
-        adjustflag="3"  # 复权方式
-    )
-    
-    data_list = []
-    while (rs.error_code == "0") & rs.next():
-        data_list.append(rs.get_row_data())
-    
-    bs.logout()
+    # 重试机制（baostock 有时第一次请求会失败）
+    for attempt in range(3):
+        bs.login()
+        
+        # baostock 要求日期格式为 YYYY-MM-DD
+        start_fmt = pd.to_datetime(start).strftime("%Y-%m-%d") if start else "2022-01-01"
+        end_fmt = pd.to_datetime(end).strftime("%Y-%m-%d") if end else datetime.now().strftime("%Y-%m-%d")
+        
+        rs = bs.query_history_k_data_plus(
+            bs_code,
+            "date,open,high,low,close,volume",
+            start_date=start_fmt,
+            end_date=end_fmt,
+            frequency="d",
+            adjustflag="3"  # 复权方式
+        )
+        
+        data_list = []
+        while (rs.error_code == "0") & rs.next():
+            data_list.append(rs.get_row_data())
+        
+        bs.logout()
+        
+        if len(data_list) > 0:
+            break
+        
+        if attempt < 2:
+            print(f"   ⚠️ 第 {attempt + 1} 次请求返回空数据，1秒后重试...")
+            time.sleep(1)
     
     df = pd.DataFrame(data_list, columns=["date", "open", "high", "low", "close", "volume"])
     
     if len(df) == 0:
-        raise ValueError("baostock 返回空数据")
+        raise ValueError(f"baostock 返回空数据（{bs_code}）")
     
     df["date"] = pd.to_datetime(df["date"])
     for col in ["open", "high", "low", "close", "volume"]:
         df[col] = pd.to_numeric(df[col], errors="coerce")
     
-    # 沪深300指数价格(约5000)与ETF价格(约4)量级不同，进行归一化
-    # 使指数走势可用于ETF策略回测
-    if df["close"].mean() > 1000:
-        scale = df["close"].iloc[0] / 4.0  # 以首日收盘价为基准，归一化到约4元
-        for col in ["open", "high", "low", "close"]:
-            df[col] = df[col] / scale
-        print(f"   (指数数据已归一化到ETF价格量级，比例 1:{scale:.0f})")
-    
     df = df.sort_values("date").reset_index(drop=True)
-    print(f"✅ 获取成功（沪深300指数），共 {len(df)} 条数据，"
+    print(f"✅ 获取成功（baostock {code}），共 {len(df)} 条数据，"
           f"区间: {df['date'].min().date()} ~ {df['date'].max().date()}")
     return df
 
@@ -200,9 +210,9 @@ def get_etf_hist(code: str = ETF_CODE,
     except Exception as e:
         print(f"⚠️ akshare 获取失败: {e}")
     
-    # 第2步：尝试 baostock（获取沪深300指数作为替代）
+    # 第2步：尝试 baostock（获取对应 ETF 真实数据）
     try:
-        df = _get_baostock_index(start=start, end=end)
+        df = _get_baostock_etf(code=code, start=start, end=end)
         return df
     except Exception as e:
         print(f"⚠️ baostock 获取失败: {e}")

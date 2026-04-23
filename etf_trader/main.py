@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
 """
-ETF 均线策略自动交易程序
+ETF 混合策略自动交易程序
 
 用法:
-    # 回测模式（默认）
+    # 回测模式（默认 — 混合策略）
     python main.py
+    
+    # 批量回测多只ETF
+    python main.py --mode batch --strategy hybrid --top 5
     
     # 模拟盘模式（实时监控，模拟成交）
     python main.py --mode simulate
@@ -29,6 +32,7 @@ from strategy import generate_signals, get_current_signal
 from backtest import BacktestEngine
 from grid_backtest import GridBacktestEngine
 from hybrid_backtest import HybridBacktestEngine
+from batch_backtest import run_batch_backtest, print_top_etfs
 from trader import create_trader
 
 
@@ -197,9 +201,9 @@ def main():
     parser = argparse.ArgumentParser(description="ETF均线策略自动交易程序")
     parser.add_argument(
         "--mode",
-        choices=["backtest", "simulate", "manual", "qmt"],
+        choices=["backtest", "simulate", "manual", "qmt", "batch"],
         default=RUN_MODE,
-        help="运行模式: backtest=回测, simulate=模拟盘, manual=手动提醒, qmt=QMT实盘"
+        help="运行模式: backtest=回测, simulate=模拟盘, manual=手动提醒, qmt=QMT实盘, batch=批量回测"
     )
     parser.add_argument(
         "--strategy",
@@ -212,6 +216,12 @@ def main():
         default=None,
         help="回测起始日期，如 20220101"
     )
+    parser.add_argument(
+        "--top",
+        type=int,
+        default=3,
+        help="批量回测显示TOP N"
+    )
     args = parser.parse_args()
     
     if args.mode == "backtest":
@@ -221,6 +231,12 @@ def main():
             run_hybrid_backtest()
         else:
             run_ma_backtest()
+    elif args.mode == "batch":
+        df = run_batch_backtest(strategy=args.strategy)
+        if not df.empty:
+            print_top_etfs(df, args.top, "total_return")
+            print_top_etfs(df, args.top, "annual_return")
+            print_top_etfs(df, args.top, "max_drawdown")
     else:
         run_live(args.mode)
 
