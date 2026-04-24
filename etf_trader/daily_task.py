@@ -4,7 +4,8 @@ ETF 策略每日收盘后定时报告服务
 
 核心逻辑：
     - 每天收盘后（15:05）自动获取当日行情，计算信号
-    - 收盘后发送一次每日报告（信号 + 建议操作）
+    - 对 ETF_LIST 中配置的所有基金分别生成报告
+    - 收盘后发送一次汇总报告（所有 ETF 信号 + 建议操作）
     - 非运行时间自动休眠，节省资源
     - 支持手动触发：python daily_task.py --now
 
@@ -30,9 +31,10 @@ import time
 from datetime import datetime, time as dt_time, timedelta
 
 from config import (
-    ETF_CODE, ETF_NAME, MA_PERIOD, STRATEGY,
+    ETF_CODE, ETF_NAME, ETF_LIST, MA_PERIOD, STRATEGY,
     USE_DUAL_MA, FAST_MA, SLOW_MA, TREND_MA,
-    BACKTEST_START, BACKTEST_END
+    BACKTEST_START, BACKTEST_END,
+    GRID_LOWER, GRID_UPPER, GRID_NUM
 )
 from data_feed import get_etf_hist, get_daily_close
 from strategy import generate_signals, get_current_signal
@@ -79,23 +81,28 @@ def wait_until(target: datetime):
     print()  # 换行
 
 
-# ==================== 每日报告生成 ====================
+# ==================== 单只 ETF 报告生成 ====================
 
-def generate_daily_report(strategy: str) -> dict:
+def generate_etf_report(etf_config: dict, strategy: str) -> dict:
     """
-    生成每日收盘后报告
+    为单只 ETF 生成收盘后报告
+    
+    Args:
+        etf_config: {"code": ..., "name": ..., "grid_lower": ..., "grid_upper": ..., "grid_num": ...}
+        strategy: "ma" / "grid" / "hybrid"
     
     Returns:
         dict: 报告数据，包含信号、建议操作等
     """
-    print(f"\n{'='*60}")
-    print(f"📊 正在生成 {ETF_NAME} ({ETF_CODE}) 每日报告...")
-    print(f"{'='*60}")
+    code = etf_config["code"]
+    name = etf_config["name"]
     
-    # 获取历史数据（包含当日收盘数据）
-    df = get_etf_hist(code=ETF_CODE, start=BACKTEST_START, end=BACKTEST_END)
+    print(f"\n📊 正在生成 {name} ({code}) 报告...")
+    
+    # 获取历史数据
+    df = get_etf_hist(code=code, start=BACKTEST_START, end=BACKTEST_END)
     if len(df) < MA_PERIOD + 5:
-        print(f"⚠️ 历史数据不足，无法生成报告")
+        print(f"  ⚠️ 历史数据不足，跳过")
         return None
     
     # 计算信号
@@ -112,8 +119,8 @@ def generate_daily_report(strategy: str) -> dict:
     # 构建报告
     report = {
         "time": f"{report_date} 收盘后",
-        "code": ETF_CODE,
-        "name": ETF_NAME,
+        "code": code,
+        "name": name,
         "close": close_price,
         "signal": signal_info["signal"],
         "signal_label": signal_info.get("signal_label") or "无",
@@ -126,19 +133,17 @@ def generate_daily_report(strategy: str) -> dict:
     if strategy == "ma":
         report["action"] = _get_ma_action(report)
     elif strategy == "grid":
-        report["action"] = _get_grid_action(report)
+        report["action"] = _get_grid_action(report, etf_config)
     elif strategy == "hybrid":
-        report["action"] = _get_hybrid_action(report)
+        report["action"] = _get_hybrid_action(report, etf_config)
     
     # 打印到控制台
-    print(f"\n📅 报告日期: {report['time']}")
-    print(f"💰 收盘价: {close_price:.3f} 元")
-    print(f"📈 信号: {report['signal_label']}")
+    print(f"  💰 收盘价: {close_price:.3f} 元")
+    print(f"  📈 信号: {report['signal_label']}")
     if report["ma_values"]:
-        for k, v in report["ma_values"].items():
-            print(f"   {k.upper()}: {v:.3f}")
-    print(f"\n💡 建议操作: {report['action']}")
-    print("=" * 60)
+        ma_str = " | ".join([f"{k.upper()}={v:.3f}" for k, v in report["ma_values"].items()])
+        print(f"  📐 {ma_str}")
+    print(f"  💡 建议: {report['action']}")
     
     return report
 
@@ -154,16 +159,18 @@ def _get_ma_action(report: dict) -> str:
         return "暂无明确信号，建议持仓观望"
 
 
-def _get_grid_action(report: dict) -> str:
+def _get_grid_action(report: dict, etf_config: dict) -> str:
     """网格策略建议"""
-    from config import GRID_LOWER, GRID_UPPER, GRID_NUM
-    
     price = report["close"]
-    grid_step = (GRID_UPPER - GRID_LOWER) / GRID_NUM
-    grid_idx = int((price - GRID_LOWER) / grid_step)
-    grid_idx = max(0, min(grid_idx, GRID_NUM - 1))
+    grid_lower = etf_config.get("grid_lower", GRID_LOWER)
+    grid_upper = etf_config.get("grid_upper", GRID_UPPER)
+    grid_num = etf_config.get("grid_num", GRID_NUM)
     
-    grid_low = GRID_LOWER + grid_idx * grid_step
+    grid_step = (grid_upper - grid_lower) / grid_num
+    grid_idx = int((price - grid_lower) / grid_step)
+    grid_idx = max(0, min(grid_idx, grid_num - 1))
+    
+    grid_low = grid_lower + grid_idx * grid_step
     grid_high = grid_low + grid_step
     
     distance_to_low = (price - grid_low) / grid_step
@@ -174,10 +181,10 @@ def _get_grid_action(report: dict) -> str:
     elif distance_to_high < 0.1:
         return f"价格接近网格上沿({grid_high:.3f})，建议明日逢高卖出一格"
     else:
-        return f"当前位于第{grid_idx+1}/{GRID_NUM}格，持仓观望"
+        return f"当前位于第{grid_idx+1}/{grid_num}格，持仓观望"
 
 
-def _get_hybrid_action(report: dict) -> str:
+def _get_hybrid_action(report: dict, etf_config: dict) -> str:
     """混合策略建议"""
     signal = report["signal"]
     trend_ok = report.get("trend_ok", True)
@@ -188,12 +195,15 @@ def _get_hybrid_action(report: dict) -> str:
         return "趋势转弱，建议减仓或清仓观望"
     else:
         # 无趋势信号时，参考网格
-        from config import GRID_LOWER, GRID_UPPER, GRID_NUM
         price = report["close"]
-        grid_step = (GRID_UPPER - GRID_LOWER) / GRID_NUM
-        grid_idx = int((price - GRID_LOWER) / grid_step)
-        grid_idx = max(0, min(grid_idx, GRID_NUM - 1))
-        grid_low = GRID_LOWER + grid_idx * grid_step
+        grid_lower = etf_config.get("grid_lower", GRID_LOWER)
+        grid_upper = etf_config.get("grid_upper", GRID_UPPER)
+        grid_num = etf_config.get("grid_num", GRID_NUM)
+        
+        grid_step = (grid_upper - grid_lower) / grid_num
+        grid_idx = int((price - grid_lower) / grid_step)
+        grid_idx = max(0, min(grid_idx, grid_num - 1))
+        grid_low = grid_lower + grid_idx * grid_step
         grid_high = grid_low + grid_step
         distance_to_low = (price - grid_low) / grid_step
         distance_to_high = (grid_high - price) / grid_step
@@ -206,11 +216,37 @@ def _get_hybrid_action(report: dict) -> str:
             return "趋势不明，建议持仓观望，等待明确信号"
 
 
+# ==================== 汇总报告 ====================
+
+def generate_all_reports(strategy: str) -> list:
+    """
+    为 ETF_LIST 中所有 ETF 生成报告
+    
+    Returns:
+        list: 各 ETF 报告字典列表
+    """
+    print(f"\n{'='*60}")
+    print(f"📊 ETF 每日收盘报告 ({datetime.now().strftime('%Y-%m-%d')})")
+    print(f"{'='*60}")
+    
+    reports = []
+    for etf in ETF_LIST:
+        report = generate_etf_report(etf, strategy)
+        if report:
+            reports.append(report)
+    
+    print(f"\n{'='*60}")
+    print(f"✅ 共生成 {len(reports)}/{len(ETF_LIST)} 只 ETF 报告")
+    print("=" * 60)
+    
+    return reports
+
+
 # ==================== 主程序 ====================
 
 def run_once(strategy: str, notifier: Notifier = None):
     """
-    执行一次每日报告
+    执行一次每日报告（所有 ETF）
     
     Args:
         strategy: "ma" / "grid" / "hybrid"
@@ -219,15 +255,15 @@ def run_once(strategy: str, notifier: Notifier = None):
     if notifier is None:
         notifier = Notifier()
     
-    # 生成报告
-    report = generate_daily_report(strategy)
-    if report is None:
-        print("⚠️ 报告生成失败，跳过本次发送")
+    # 生成所有 ETF 报告
+    reports = generate_all_reports(strategy)
+    if not reports:
+        print("⚠️ 没有生成任何报告，跳过本次发送")
         return
     
-    # 发送通知
-    notifier.send_daily_report(report)
-    print(f"✅ 每日报告已发送 ({datetime.now().strftime('%H:%M:%S')})")
+    # 发送汇总通知
+    notifier.send_daily_summary(reports, strategy)
+    print(f"✅ 汇总报告已发送 ({datetime.now().strftime('%H:%M:%S')})")
 
 
 def run_service(strategy: str):
@@ -237,10 +273,12 @@ def run_service(strategy: str):
     Args:
         strategy: "ma" / "grid" / "hybrid"
     """
+    etf_names = ", ".join([e["name"] for e in ETF_LIST])
+    
     print(f"\n{'='*60}")
     print(f"🚀 ETF策略每日收盘后报告服务启动")
     print(f"{'='*60}")
-    print(f"标的: {ETF_NAME} ({ETF_CODE})")
+    print(f"监控标的: {len(ETF_LIST)} 只 ETF")
     print(f"策略: {strategy}")
     print(f"运行时间: 每个工作日 15:05")
     print(f"\n⚠️ 提示: 按 Ctrl+C 停止程序")
@@ -251,7 +289,7 @@ def run_service(strategy: str):
     # 发送启动通知
     notifier.send(
         title="🚀 ETF每日报告服务已启动",
-        content=f"标的: {ETF_NAME} ({ETF_CODE})\n"
+        content=f"监控标的数: {len(ETF_LIST)} 只\n"
                 f"策略: {strategy}\n"
                 f"启动时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
                 f"\n每个工作日收盘后（15:05）自动发送报告。"

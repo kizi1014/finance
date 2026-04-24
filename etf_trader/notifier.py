@@ -250,26 +250,45 @@ class Notifier:
     
     def send_daily_report(self, report: dict) -> dict:
         """
-        发送每日策略运行报告
+        发送每日策略运行报告（单只 ETF，兼容旧接口）
         
         Args:
             report: 回测/信号报告字典
         """
-        title = "📊 ETF策略每日报告"
+        return self.send_daily_summary([report], report.get("strategy", "hybrid"))
+    
+    def send_daily_summary(self, reports: list, strategy: str = "hybrid") -> dict:
+        """
+        发送每日多 ETF 汇总报告
+        
+        Args:
+            reports: ETF 报告列表，每个元素为 dict
+            strategy: 策略名称
+        """
+        title = f"📊 ETF每日报告 ({len(reports)}只)"
         
         content_lines = [
-            f"**运行时间**: {report.get('time', 'N/A')}",
-            f"**标的**: {report.get('name', 'N/A')} ({report.get('code', 'N/A')})",
-            f"**最新收盘价**: {report.get('close', 0):.3f}",
-            f"**当前信号**: {report.get('signal_label', '无')}",
+            f"**报告日期**: {reports[0].get('time', 'N/A')}",
+            f"**策略**: {strategy}",
+            f"**监控标的**: {len(reports)} 只 ETF",
+            "",
+            "---",
         ]
         
-        if report.get("ma_values"):
-            for k, v in report["ma_values"].items():
-                content_lines.append(f"**{k.upper()}**: {v:.3f}")
+        for i, r in enumerate(reports, 1):
+            content_lines.append(f"\n**{i}. {r['name']} ({r['code']})**")
+            content_lines.append(f"收盘价: {r['close']:.3f} | 信号: {r['signal_label']}")
+            
+            if r.get("ma_values"):
+                ma_str = " | ".join([f"{k.upper()}={v:.3f}" for k, v in r["ma_values"].items()])
+                content_lines.append(ma_str)
+            
+            if r.get("action"):
+                content_lines.append(f"💡 {r['action']}")
         
-        if report.get("action"):
-            content_lines.append(f"\n⚠️ **建议操作**: {report['action']}")
+        content_lines.append("\n---")
+        content_lines.append(f"\n⏰ 报告生成时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        content_lines.append("以上建议仅供参考，投资有风险")
         
         content = "\n".join(content_lines)
         return self.send(title, content)
