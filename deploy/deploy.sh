@@ -41,7 +41,7 @@ if [ "$EUID" -ne 0 ]; then
     exit 1
 fi
 
-log_info "开始部署 ETF 量化策略盘中监控服务..."
+log_info "开始部署 ETF 量化策略 (盘中每10分钟轮询 + 飞书推送)..."
 
 # =============================================================================
 # 2. 安装系统依赖（自动检测系统类型）
@@ -122,7 +122,7 @@ log_info "创建 systemd 常驻守护服务..."
 
 cat > /etc/systemd/system/${SERVICE_NAME}.service << EOF
 [Unit]
-Description=ETF Quant Strategy Real-time Monitor
+Description=ETF Quant Strategy Intraday Monitor (10min polling)
 After=network.target
 
 [Service]
@@ -131,7 +131,7 @@ User=root
 WorkingDirectory=${INSTALL_DIR}/etf_trader
 Environment=PYTHONUNBUFFERED=1
 EnvironmentFile=${INSTALL_DIR}/etf_trader/.env
-ExecStart=${INSTALL_DIR}/etf_trader/venv/bin/python ${INSTALL_DIR}/etf_trader/daily_task.py
+ExecStart=${INSTALL_DIR}/etf_trader/venv/bin/python ${INSTALL_DIR}/etf_trader/monitor.py
 Restart=always
 RestartSec=10
 StandardOutput=append:${LOG_DIR}/monitor.log
@@ -178,6 +178,11 @@ WECHAT_CORP_ID=
 WECHAT_AGENT_ID=
 WECHAT_SECRET=
 WECHAT_TO_USER=@all
+
+# ---------- 飞书机器人（优先级最高） ----------
+# 1. 飞书 → 群设置 → 添加机器人 → 自定义机器人
+# 2. 复制 Webhook 地址（https://open.feishu.cn/open-apis/bot/v2/hook/xxxxx）
+FEISHU_WEBHOOK=
 EOF
     log_warn "请在 ${INSTALL_DIR}/etf_trader/.env 中配置通知渠道"
 else

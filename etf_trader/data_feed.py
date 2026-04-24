@@ -5,16 +5,15 @@
 import akshare as ak
 import pandas as pd
 import requests
-from datetime import datetime
+from datetime import datetime, timedelta
 from config import ETF_CODE, KLINE_PERIOD, BACKTEST_START, BACKTEST_END
 
-# 为 akshare 底层请求添加请求头，避免被反爬
-_akshare_session = requests.Session()
-_akshare_session.headers.update({
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+_http_session = requests.Session()
+_http_session.headers.update({
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36",
     "Accept": "application/json, text/javascript, */*; q=0.01",
-    "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
-    "X-Requested-With": "XMLHttpRequest",
+    "Accept-Language": "zh-CN,zh;q=0.9",
+    "Referer": "https://quote.eastmoney.com/",
 })
 
 
@@ -152,6 +151,45 @@ def _get_baostock_etf(code: str, start: str, end: str) -> pd.DataFrame:
     return df
 
 
+def _tencent_prefix(code: str) -> str:
+    if code.startswith(("5", "6", "9")):
+        return f"sh{code}"
+    return f"sz{code}"
+
+
+def _get_tencent_kline(code: str, start: str, end: str) -> pd.DataFrame:
+    """通过腾讯财经 API 获取 ETF 前复权K线（akshare 失效时的首选备选）"""
+    prefix = _tencent_prefix(code)
+    url = f"http://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param={prefix},day,,,500,qfq"
+    resp = _http_session.get(url, timeout=10)
+    data = resp.json()
+    key = data.get("data", {}).get(prefix, {})
+    klines = key.get("qfqday") or key.get("day")
+    if not klines:
+        raise ValueError(f"腾讯API返回空数据（{prefix}）")
+
+    df = pd.DataFrame(klines, columns=["date", "open", "close", "high", "low", "volume"])
+    df["date"] = pd.to_datetime(df["date"])
+    for col in ["open", "high", "low", "close", "volume"]:
+        df[col] = pd.to_numeric(df[col], errors="coerce")
+    df = df.sort_values("date").reset_index(drop=True)
+    print(f"✅ 获取成功（腾讯财经），共 {len(df)} 条数据，"
+          f"区间: {df['date'].min().date()} ~ {df['date'].max().date()}")
+    return df
+
+
+def _get_eastmoney_spot(code: str) -> dict:
+    """通过东方财富 HTTP 接口获取实时行情（绕过 akshare HTTPS 限制）"""
+    prefix = f"1.{code}" if code.startswith(("5", "6", "9")) else f"0.{code}"
+    url = f"http://push2.eastmoney.com/api/qt/ulist.np/get?fltt=2&fields=f2,f3,f12,f14&secids={prefix}"
+    resp = _http_session.get(url, timeout=10)
+    data = resp.json()
+    diff = data.get("data", {}).get("diff", [])
+    if not diff:
+        raise ValueError(f"东方财富实时行情返回空（{code}）")
+    return diff[0]
+
+
 def get_etf_hist(code: str = ETF_CODE,
                  period: str = KLINE_PERIOD,
                  start: str = BACKTEST_START,
@@ -210,14 +248,20 @@ def get_etf_hist(code: str = ETF_CODE,
     except Exception as e:
         print(f"⚠️ akshare 获取失败: {e}")
     
-    # 第2步：尝试 baostock（获取对应 ETF 真实数据）
+    # 第2步：尝试腾讯财经 API（更快更稳定）
+    try:
+        return _get_tencent_kline(code=code, start=start, end=end)
+    except Exception as e:
+        print(f"⚠️ 腾讯财经获取失败: {e}")
+    
+    # 第3步：尝试 baostock（获取对应 ETF 真实数据）
     try:
         df = _get_baostock_etf(code=code, start=start, end=end)
         return df
     except Exception as e:
         print(f"⚠️ baostock 获取失败: {e}")
     
-    # 第3步：降级为模拟数据
+    # 第4步：降级为模拟数据
     print("🔄 自动切换为模拟数据进行测试...")
     return generate_mock_data()
 
@@ -233,41 +277,45 @@ def get_daily_close(code: str = ETF_CODE) -> dict:
     """
     import time
     
-    # 第1步：尝试 akshare 历史K线接口（数据最准确，包含完整OHLC）
-    for attempt in range(3):
-        try:
-            # 获取最近5天的数据，取最后一天
-            end = datetime.now().strftime("%Y%m%d")
-            start = (datetime.now() - __import__('datetime').timedelta(days=10)).strftime("%Y%m%d")
-            
-            df = ak.fund_etf_hist_em(
-                symbol=code,
-                period="daily",
-                start_date=start,
-                end_date=end,
-                adjust="qfq"
-            )
-            if len(df) > 0:
-                df = normalize_columns(df)
-                latest = df.iloc[-1]
-                return {
-                    "code": code,
-                    "price": float(latest["close"]),
-                    "date": str(latest["date"]),
-                    "open": float(latest["open"]),
-                    "high": float(latest["high"]),
-                    "low": float(latest["low"]),
-                    "volume": float(latest["volume"]),
-                }
-        except Exception as e:
-            if attempt < 2:
-                wait_time = 2 ** attempt
-                print(f"⚠️ K线接口获取收盘数据失败（第{attempt + 1}次）: {e}，{wait_time}秒后重试...")
-                time.sleep(wait_time)
-            else:
-                print(f"⚠️ K线接口获取收盘数据失败（已重试3次）: {e}")
+    # 第1步：尝试东方财富 HTTP 实时接口（最快最稳定）
+    try:
+        quote = _get_eastmoney_spot(code)
+        return {
+            "code": code,
+            "price": float(quote["f2"]),
+            "date": datetime.now().strftime("%Y-%m-%d"),
+            "open": float(quote["f2"]),
+            "high": float(quote["f2"]),
+            "low": float(quote["f2"]),
+            "volume": 0,
+        }
+    except Exception as e:
+        print(f"⚠️ 东方财富实时接口获取收盘数据失败: {e}")
     
-    # 第2步：尝试新浪 ETF 实时接口
+    # 第2步：尝试 akshare 历史K线接口（包含完整OHLC），快速试一次不重试
+    try:
+        end = datetime.now().strftime("%Y%m%d")
+        start = (datetime.now() - timedelta(days=10)).strftime("%Y%m%d")
+        df = ak.fund_etf_hist_em(
+            symbol=code, period="daily",
+            start_date=start, end_date=end, adjust="qfq"
+        )
+        if len(df) > 0:
+            df = normalize_columns(df)
+            latest = df.iloc[-1]
+            return {
+                "code": code,
+                "price": float(latest["close"]),
+                "date": str(latest["date"]),
+                "open": float(latest["open"]),
+                "high": float(latest["high"]),
+                "low": float(latest["low"]),
+                "volume": float(latest["volume"]),
+            }
+    except Exception as e:
+        print(f"⚠️ K线接口获取收盘数据失败: {e}")
+    
+    # 第3步：尝试新浪 ETF 实时接口
     try:
         df = ak.fund_etf_category_sina(symbol="ETF基金")
         prefix = "sh" if code.startswith(("5", "6", "9")) else "sz"
@@ -288,7 +336,7 @@ def get_daily_close(code: str = ETF_CODE) -> dict:
     except Exception as e:
         print(f"⚠️ 新浪接口获取收盘数据失败: {e}")
     
-    # 第3步：尝试 baostock
+    # 第4步：尝试 baostock
     try:
         import baostock as bs
         

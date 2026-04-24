@@ -27,7 +27,16 @@ python main.py --mode batch --strategy hybrid --top 5
 python main.py --mode simulate     # simulated trading
 python main.py --mode manual       # print alerts only
 
-# Daily report service (systemd) — runs once after market close each day
+# Intraday monitor (10-min polling) — runs during trading hours on workdays
+python monitor.py
+
+# Intraday monitor with specific strategy
+python monitor.py --strategy ma       # ma / grid / hybrid
+python monitor.py --strategy grid
+python monitor.py --strategy hybrid   # default
+python monitor.py --interval 600      # polling interval in seconds (default 600)
+
+# Daily report — runs once after market close each day
 python daily_task.py --strategy hybrid    # ma / grid / hybrid
 
 # Run report immediately (for testing)
@@ -46,18 +55,20 @@ etf_trader/
 ├── hybrid_backtest.py  # Hybrid (trend + grid) backtest engine
 ├── batch_backtest.py   # Batch backtest engine for multiple ETFs
 ├── trader.py           # Live trading (simulate/manual/qmt modes)
-├── notifier.py         # Notifications: wechat > dingtalk > serverchan > console
-├── daily_task.py       # Intraday monitoring service entrypoint
+├── notifier.py         # Notifications: feishu > wechat > dingtalk > serverchan > console
+├── monitor.py          # Intraday monitoring (10-min polling during trading hours)
+├── daily_task.py       # Daily after-close report service entrypoint
 └── main.py             # CLI entrypoint
 ```
 
-**Entry points**: `main.py` for backtest/live CLI, `daily_task.py` for server monitoring.
+**Entry points**: `main.py` for backtest/live CLI, `monitor.py` for intraday monitoring, `daily_task.py` for daily after-close report.
 
 ## Key Conventions
 
 - **Data fallback chain**: akshare → baostock (对应ETF真实数据) → mock data. Never crashes on network failure.
-- **Daily report mode**: `daily_task.py` now runs once per day at 15:05 (after market close) instead of real-time intraday monitoring. Use `--now` for immediate execution.
-- **Notification priority**: WeChat Work > DingTalk > ServerChan > console. At least one channel must be configured via env vars.
+- **Daily report mode**: `daily_task.py` now runs once per day at 15:05 (after market close). Use `--now` for immediate execution.
+- **Intraday monitor mode**: `monitor.py` runs every 10 minutes during A-share trading hours (9:30-11:30, 13:00-15:00) on workdays. Only sends notifications when the buy/sell signal changes.
+- **Notification priority**: Feishu > WeChat Work > DingTalk > ServerChan > console. At least one channel must be configured via env vars. Feishu webhook URL format is `https://open.feishu.cn/open-apis/bot/v2/hook/xxxxx`.
 - **Default strategy is hybrid** (`STRATEGY = "hybrid"` in config.py). Grid/MA strategy backtest requires `--strategy grid` or `--strategy ma`.
 - **No test suite** exists. Manual verification by running backtest and inspecting output.
 - **`.env` file** for secrets (notification keys). Not checked into repo.

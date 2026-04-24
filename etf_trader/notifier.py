@@ -55,8 +55,13 @@ class Notifier:
         # Server酱配置
         self.serverchan_key = os.getenv("SERVERCHAN_KEY", "")
         
+        # 飞书配置
+        self.feishu_webhook = os.getenv("FEISHU_WEBHOOK", "")
+        
         # 记录哪些渠道可用
         self.channels = []
+        if self.feishu_webhook:
+            self.channels.append("feishu")
         if self.wx_corp_id and self.wx_secret:
             self.channels.append("wechat")
         if self.ding_webhook:
@@ -158,6 +163,29 @@ class Notifier:
             print(f"❌ 钉钉通知异常: {e}")
             return False
     
+    # ==================== 飞书机器人 ====================
+
+    def _send_feishu(self, title: str, content: str) -> bool:
+        """通过飞书机器人发送消息"""
+        try:
+            payload = {
+                "msg_type": "text",
+                "content": {
+                    "text": f"{title}\n\n{content}"
+                }
+            }
+            resp = requests.post(self.feishu_webhook, json=payload, timeout=10)
+            data = resp.json()
+            if data.get("code") == 0:
+                print("✅ 飞书通知发送成功")
+                return True
+            else:
+                print(f"❌ 飞书通知失败: {data}")
+                return False
+        except Exception as e:
+            print(f"❌ 飞书通知异常: {e}")
+            return False
+
     # ==================== Server酱 ====================
     
     def _send_serverchan(self, title: str, content: str) -> bool:
@@ -197,6 +225,9 @@ class Notifier:
         print("-" * 40)
         
         results = {}
+        
+        if "feishu" in self.channels:
+            results["feishu"] = self._send_feishu(title, content)
         
         if "wechat" in self.channels:
             results["wechat"] = self._send_wechat(title, content)
