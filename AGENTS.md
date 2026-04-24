@@ -27,8 +27,11 @@ python main.py --mode batch --strategy hybrid --top 5
 python main.py --mode simulate     # simulated trading
 python main.py --mode manual       # print alerts only
 
-# Server monitoring service (systemd)
+# Daily report service (systemd) — runs once after market close each day
 python daily_task.py --strategy hybrid    # ma / grid / hybrid
+
+# Run report immediately (for testing)
+python daily_task.py --now --strategy hybrid
 ```
 
 ## Architecture
@@ -53,7 +56,7 @@ etf_trader/
 ## Key Conventions
 
 - **Data fallback chain**: akshare → baostock (对应ETF真实数据) → mock data. Never crashes on network failure.
-- **akshare rate limits** apply; `REFRESH_INTERVAL` in `config.py` controls polling cadence (default 60s).
+- **Daily report mode**: `daily_task.py` now runs once per day at 15:05 (after market close) instead of real-time intraday monitoring. Use `--now` for immediate execution.
 - **Notification priority**: WeChat Work > DingTalk > ServerChan > console. At least one channel must be configured via env vars.
 - **Default strategy is hybrid** (`STRATEGY = "hybrid"` in config.py). Grid/MA strategy backtest requires `--strategy grid` or `--strategy ma`.
 - **No test suite** exists. Manual verification by running backtest and inspecting output.

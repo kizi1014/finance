@@ -222,28 +222,125 @@ def get_etf_hist(code: str = ETF_CODE,
     return generate_mock_data()
 
 
-def get_latest_price(code: str = ETF_CODE) -> dict:
+def get_daily_close(code: str = ETF_CODE) -> dict:
     """
-    获取 ETF 最新行情（用于实盘/模拟盘的实时数据）
+    获取 ETF 最新收盘数据（用于收盘后每日报告）
+    
+    优先使用 akshare 历史K线接口（数据最准确），失败时回退到其他数据源
     
     Returns:
-        dict: {"code": ..., "price": ..., "time": ...}
+        dict: {"code": ..., "price": ..., "date": ..., "open": ..., "high": ..., "low": ...}
     """
+    import time
+    
+    # 第1步：尝试 akshare 历史K线接口（数据最准确，包含完整OHLC）
+    for attempt in range(3):
+        try:
+            # 获取最近5天的数据，取最后一天
+            end = datetime.now().strftime("%Y%m%d")
+            start = (datetime.now() - __import__('datetime').timedelta(days=10)).strftime("%Y%m%d")
+            
+            df = ak.fund_etf_hist_em(
+                symbol=code,
+                period="daily",
+                start_date=start,
+                end_date=end,
+                adjust="qfq"
+            )
+            if len(df) > 0:
+                df = normalize_columns(df)
+                latest = df.iloc[-1]
+                return {
+                    "code": code,
+                    "price": float(latest["close"]),
+                    "date": str(latest["date"]),
+                    "open": float(latest["open"]),
+                    "high": float(latest["high"]),
+                    "low": float(latest["low"]),
+                    "volume": float(latest["volume"]),
+                }
+        except Exception as e:
+            if attempt < 2:
+                wait_time = 2 ** attempt
+                print(f"⚠️ K线接口获取收盘数据失败（第{attempt + 1}次）: {e}，{wait_time}秒后重试...")
+                time.sleep(wait_time)
+            else:
+                print(f"⚠️ K线接口获取收盘数据失败（已重试3次）: {e}")
+    
+    # 第2步：尝试新浪 ETF 实时接口
     try:
-        df = ak.fund_etf_spot_em()
-        row = df[df["代码"] == code]
+        df = ak.fund_etf_category_sina(symbol="ETF基金")
+        prefix = "sh" if code.startswith(("5", "6", "9")) else "sz"
+        sina_code = f"{prefix}{code}"
+        row = df[df["代码"] == sina_code]
         if row.empty:
-            raise ValueError(f"未找到 {code} 的实时行情")
+            raise ValueError(f"未找到 {code}")
         
         return {
             "code": code,
             "price": float(row["最新价"].values[0]),
-            "time": str(row["时间"].values[0]) if "时间" in row.columns else datetime.now().strftime("%H:%M:%S"),
-            "open": float(row["开盘价"].values[0]),
-            "high": float(row["最高价"].values[0]),
-            "low": float(row["最低价"].values[0]),
-            "pre_close": float(row["昨收"].values[0]),
+            "date": datetime.now().strftime("%Y-%m-%d"),
+            "open": float(row["今开"].values[0]),
+            "high": float(row["最高"].values[0]),
+            "low": float(row["最低"].values[0]),
+            "volume": float(row["成交量"].values[0]),
         }
     except Exception as e:
-        print(f"⚠️ 获取实时行情失败: {e}")
-        return None
+        print(f"⚠️ 新浪接口获取收盘数据失败: {e}")
+    
+    # 第3步：尝试 baostock
+    try:
+        import baostock as bs
+        
+        if code.startswith(("5", "6", "9")):
+            bs_code = f"sh.{code}"
+        else:
+            bs_code = f"sz.{code}"
+        
+        bs.login()
+        today = datetime.now().strftime("%Y-%m-%d")
+        start = (datetime.now() - __import__('datetime').timedelta(days=5)).strftime("%Y-%m-%d")
+        rs = bs.query_history_k_data_plus(
+            bs_code,
+            "date,open,high,low,close,volume",
+            start_date=start,
+            end_date=today,
+            frequency="d",
+            adjustflag="3"
+        )
+        data_list = []
+        while (rs.error_code == "0") & rs.next():
+            data_list.append(rs.get_row_data())
+        bs.logout()
+        
+        if len(data_list) > 0:
+            row = data_list[-1]
+            return {
+                "code": code,
+                "price": float(row[4]),
+                "date": row[0],
+                "open": float(row[1]),
+                "high": float(row[2]),
+                "low": float(row[3]),
+                "volume": float(row[5]),
+            }
+    except Exception as e:
+        print(f"⚠️ baostock 获取收盘数据失败: {e}")
+    
+    print("❌ 所有数据源获取收盘数据均失败")
+    return None
+
+
+def get_latest_price(code: str = ETF_CODE) -> dict:
+    """
+    获取 ETF 最新行情（兼容旧接口，实际调用 get_daily_close）
+    
+    Returns:
+        dict: {"code": ..., "price": ..., "time": ...}
+    """
+    result = get_daily_close(code)
+    if result:
+        # 兼容旧格式
+        result["time"] = result.get("date", datetime.now().strftime("%H:%M:%S"))
+        result["pre_close"] = result["price"]
+    return result
